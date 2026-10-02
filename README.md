@@ -89,6 +89,58 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 Keys: `i` forward, `,` backward, `j`/`l` turn, `Shift`+`J`/`Shift`+`L` strafe, `k` stop.
 The robot listens on `/cmd_vel` (`geometry_msgs/msg/Twist`).
 
+## How the simulation works
+
+`gazebo.launch.py` composes three pieces:
+
+```
+ros2 launch go2_config gazebo.launch.py
+ ├─ champ_bringup/bringup.launch.py   # robot_description + champ_base nodes (controller, state estimator, EKFs)
+ ├─ champ_gazebo/gazebo.launch.py     # starts Gazebo, loads the world, spawns the robot
+ └─ go2_config ground_truth_odom      # publishes /odom + odom -> base_footprint TF (ground truth)
+```
+
+**URDF assembly** — `go2_description/xacro/robot.xacro` includes, in order: `const.xacro`,
+`leg.xacro`, `materials.xacro`, `gazebo.xacro`, and `sensors.xacro` (the depth camera + Livox
+Mid-360 definitions added for this project).
+
+**Gazebo plugins** (defined in `gazebo.xacro` / `sensors.xacro`):
+
+| Plugin | Purpose | Output |
+|---|---|---|
+| `libgazebo_ros_p3d.so` | Ground-truth pose from Gazebo | `/odom/ground_truth` |
+| `libgazebo_ros2_control.so` | Bridge between champ joint commands and Gazebo joints | — |
+| `libgazebo_ros_imu_sensor.so` | IMU | `/imu/data` |
+| `libgazebo_ros_camera.so` (depth) | Depth camera | `depth_camera/*` |
+| `libros2_livox.so` | Livox Mid-360 | `livox_mid360`, `livox_mid360_PointCloud2` |
+
+**Control loop:**
+
+```
+/cmd_vel ──► quadruped_controller_node (champ_base)
+                └─► joint_group_effort_controller/joint_trajectory
+                        └─► gazebo_ros2_control ──► Gazebo joints
+```
+
+`champ_base`'s `quadruped_controller_node` subscribes to `/cmd_vel` and turns the velocity
+command into leg joint trajectories (gait defined in `go2_config/config/gait/gait.yaml`).
+
+**Odometry** — in simulation the foot-contact odometry is unreliable, so `gazebo.launch.py`
+passes `publish_foot_contacts:=false` and `close_loop_odom:=true`. The `ground_truth_odom` node
+subscribes to `/odom/ground_truth` and republishes it as `/odom` plus the
+`odom -> base_footprint` transform (replacing the foot-contact EKF).
+
+**TF tree:**
+
+```
+map ─► odom ─► base_footprint ─► base_link ─► trunk ─┬─► lf_*/rf_*/lh_*/rh_* legs
+                                                     ├─► imu_link
+                                                     ├─► depth_camera_link
+                                                     └─► livox_mid360
+```
+
+`map` only appears once SLAM / AMCL is running (see below); otherwise the tree is rooted at `odom`.
+
 ## Sensors
 
 | Sensor | Topics |
@@ -101,14 +153,68 @@ for visualization or FAST-LIO for 3D SLAM.
 
 ## SLAM & Navigation
 
-```bash
-# Online SLAM (slam_toolbox) + Nav2, with RViz
-ros2 launch go2_config slam.launch.py
+### Worlds and maps
 
-# Save the map, then navigate with AMCL
-ros2 run nav2_map_server map_saver_cli -f ~/map
+The simulation **world** and the navigation **map** are two independent arguments:
+
+```bash
+# Choose a world (default: worlds/outdoor.world)
+ros2 launch go2_config gazebo.launch.py world:=<path/to/world>
+
+# Built-in worlds: worlds/outdoor.world (default), worlds/default.world, worlds/playground.world
+```
+
+```bash
+# Choose a prebuilt map for AMCL navigation (default: maps/map.yaml)
+ros2 launch go2_config navigate.launch.py map:=<path/to/map.yaml>
+
+# Built-in maps: maps/map.yaml, maps/playground.yaml
+```
+
+> The **world** is the Gazebo 3D environment; the **map** is the 2D occupancy grid used by
+> Nav2/AMCL. They are matched by hand — e.g. `playground.world` pairs with `playground.yaml`.
+
+### Mapping (SLAM)
+
+```bash
+ros2 launch go2_config slam.launch.py             # slam_toolbox (online async) + Nav2 + RViz
+ros2 run nav2_map_server map_saver_cli -f ~/map   # save the map once built
+```
+
+### Localization + navigation (AMCL)
+
+```bash
 ros2 launch go2_config navigate.launch.py map:=/path/to/map.yaml
 ```
+
+### How SLAM connects to sensor data — and a known gap
+
+`slam_toolbox` (`go2_config/config/autonomy/slam.yaml`) is configured with `scan_topic: /scan`,
+i.e. it expects a **2D laser scan** (`sensor_msgs/msg/LaserScan`). The Nav2 costmaps
+(`config/autonomy/navigation.yaml`) likewise subscribe to 2D laser scans (`/scan`, `/base/scan`)
+and 3D point clouds (`/camera/depth/color/points`, `/zed/point_cloud/cloud_registered`).
+
+The Go2 described here currently ships **no 2D lidar**, so this data does **not** match out of
+the box:
+
+| Component | Expects | Actually available on this robot |
+|---|---|---|
+| `slam_toolbox` | `/scan` (LaserScan) | ✗ none |
+| costmap `voxel2d_layer` | `/scan`, `/base/scan` (LaserScan) | ✗ none |
+| costmap `voxel3d_layer` | `/camera/depth/color/points`, `/zed/...` (PointCloud2) | ✗ (`depth_camera/points` is the real topic) |
+| Livox Mid-360 | (not consumed here) | `livox_mid360_PointCloud2` (3D) |
+
+Consequences, and two ways to close the gap:
+
+- **As-is**: `slam_toolbox` receives nothing on `/scan`, so it builds no map, and Nav2's
+  obstacle layers have no sensor input.
+- **Path A — 2D SLAM (slam_toolbox + Nav2)**: add a 2D lidar to `sensors.xacro`
+  (`libgazebo_ros_ray_sensor.so` publishing `/scan`), then update the `navigation.yaml`
+  observation topics to the real topics (e.g. `depth_camera/points` for the 3D layer).
+- **Path B — 3D SLAM (FAST-LIO)**: use the Mid-360 `livox_mid360_PointCloud2` directly with
+  FAST-LIO. The Mid-360 is a non-repetitive 360° 3D lidar that emits `PointCloud2`, not
+  `LaserScan`, so it cannot feed `slam_toolbox`; Nav2's 2D costmaps still need a 2D source for
+  obstacle avoidance.
 
 ## Real robot
 
