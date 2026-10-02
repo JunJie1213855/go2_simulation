@@ -1,0 +1,27 @@
+# ---- External dependency (clone separately, see README) ----
+# CHAMP quadruped framework: https://github.com/chvmp/champ
+/champ/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+
+# ---- Editors / IDE ----
+.vscode/
+.idea/
+.history/
+*.swp
+*~
+
+# ---- Colcon / ROS 2 build artifacts ----
+build/
+install/
+log/
+
+# ---- Misc ----
+*.log
+.DS_Store
