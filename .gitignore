@@ -1,6 +1,6 @@
 # ---- External dependency (clone separately, see README) ----
 # CHAMP quadruped framework: https://github.com/chvmp/champ
-/champ/
+# /champ/
 
 # ---- Python ----
 __pycache__/
