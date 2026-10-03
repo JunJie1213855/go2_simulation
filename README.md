@@ -204,6 +204,9 @@ points/s in every row, i.e. CPU-bound, so this is a pure tradeoff and not a free
 | 2 | 20 000 | 40 000 | 0.29 | 2.9 Hz | 23.8 Hz |
 | **4 (current)** | 10 000 | 20 000 | 0.52 | 5.7 Hz | 55.9 Hz |
 
+Both tables' **IMU column was measured with the IMU still at its original 100 Hz `<update_rate>`**;
+the current setting is 250 Hz, so those figures scale by 2.5× (rate = nominal × RTF).
+
 The GUI costs about 1.3×: back-to-back on `playground.world` at downsample 4, RTF went 0.83
 headless → 0.66 with the GUI. Repeated runs of that same GUI configuration gave 0.61, 0.66 and
 0.34 as the desktop load varied — which is exactly why the numbers above are worth reading as
@@ -272,9 +275,27 @@ and it stayed upright (z ≈ 0.29, |roll| ≤ 0.04, |pitch| ≤ 0.06).
 The Mid-360 is a non-repetitive 360° **3D** lidar (no `LaserScan`); use `livox_mid360_PointCloud2`
 for visualization or FAST-LIO for 3D SLAM.
 
-Sensor rates are `RTF × nominal` (lidar 10 Hz, IMU 100 Hz, depth camera 30 Hz), so on a machine
-that cannot run the simulation at real time the point cloud arrives proportionally slowly — see
-the performance section. If the lidar topics exist but never publish, check `<always_on>` first.
+Sensor rates are `RTF × nominal` and every `<update_rate>` is in **simulation** time, so the rates
+are exact in sim time but scale down with RTF on the wall clock. Nominal values: lidar 10 Hz, IMU
+250 Hz, depth camera 30 Hz. See the performance section. If the lidar topics exist but never
+publish, check `<always_on>` first.
+
+> **A sensor's achieved rate is quantized to whole physics steps**, so not every requested rate
+> exists. Gazebo rounds the sensor period up to an integer number of `max_step_size` steps, and it
+> does so silently — you get a perfectly uniform stream at the *wrong* rate. Measured:
+>
+> | Requested | Physics | Achieved sim interval | Achieved sim rate |
+> |---|---|---|---|
+> | 10 Hz (lidar) | 2 ms (500 Hz) | 100.000 ms | 10.000 Hz |
+> | 20 Hz | 2 ms | 50.000 ms | 19.987 Hz |
+> | **250 Hz (IMU, current)** | **2 ms** | **4.000 ms** | **250.000 Hz** |
+> | 200 Hz | 2 ms | 6.000 ms | 166.667 Hz |
+> | 200 Hz | 2.5 ms (400 Hz) | 5.000 ms | 200.000 Hz |
+>
+> At 2 ms the reachable rates are only `500 / n` (500, 250, 166.67, 125, 100, …), so **200 Hz is
+> not representable** — asking for it yields 166.667 Hz with no warning. That is why the IMU is
+> set to 250 Hz. For exactly 200 Hz the physics rate has to be a multiple of 200
+> (`real_time_update_rate: 400`, i.e. `max_step_size 0.0025`).
 
 ## SLAM & Navigation
 
