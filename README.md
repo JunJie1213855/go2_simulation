@@ -5,12 +5,13 @@ Unitree **Go2** quadruped simulation for ROS 2 Humble + Gazebo Classic, based on
 and a **Livox Mid-360** 3D lidar.
 
 This repo lives at the `src/` level of a colcon workspace and contains the Go2-specific
-packages only. The CHAMP framework is an external dependency (cloned separately).
+packages plus a **vendored** copy of the CHAMP framework (patches already applied, see below).
 
 ## Repository layout
 
 | Package | Description |
 |---|---|
+| [`champ`](champ/) | Vendored CHAMP quadruped framework (gait controller, state estimation, Gazebo/Nav2 bringup), patched for this project |
 | [`go2_description`](go2_description/) | Go2 URDF/xacro description, meshes, `ros2_control` config, and the sensor definitions (`xacro/sensors.xacro`: depth camera + Livox Mid-360) |
 | [`go2_config`](go2_config/) | Go2 launch files (Gazebo sim, real-robot bringup, SLAM, navigation), gait/joints configs, worlds, maps, and the ground-truth odometry relay |
 | [`livox_laser_simulation_RO2`](livox_laser_simulation_RO2/) | `ros2_livox_simulation`: Gazebo plugin that simulates Livox lidars (publishes `CustomMsg` + `PointCloud2`) |
@@ -26,23 +27,20 @@ packages only. The CHAMP framework is an external dependency (cloned separately)
 
 ### 1. CHAMP
 
-Clone the CHAMP framework next to this repo (inside the same workspace `src/`):
-
-```bash
-cd <workspace>/src
-git clone https://github.com/chvmp/champ.git
-```
+CHAMP is **vendored** in this repo under [`champ/`](champ/) — it is tracked directly (not a git
+submodule) and the local patches it needs are already applied. You do **not** need to clone it
+separately.
 
 > `go2_config` and `go2_description` depend on CHAMP packages
 > (`champ_bringup`, `champ_gazebo`, `champ_description`, `champ_navigation`, `champ_base`, ...).
 
-A few CHAMP launch files need small patches for the Go2 sim to run cleanly:
+The patches applied to the vendored copy:
 
-- `champ_gazebo/launch/gazebo.launch.py` — add a `publish_foot_contacts` argument that gates the
+- `champ_gazebo/launch/gazebo.launch.py` — a `publish_foot_contacts` argument that gates the
   `contact_sensor` node (the foot-contact odometry crashes under Gazebo; `go2_config` passes
   `publish_foot_contacts:=false` in simulation).
 - `champ_description/launch/description.launch.py` and
-  `champ_bringup/launch/bringup.launch.py` — wrap the `xacro` `Command(...)` results in
+  `champ_bringup/launch/bringup.launch.py` — the `xacro` `Command(...)` results are wrapped in
   `ParameterValue(..., value_type=str)` so the URDF string is not YAML-parsed.
 
 Each patch is described in detail, with rationale and line numbers, in
@@ -271,6 +269,52 @@ and it stayed upright (z ≈ 0.29, |roll| ≤ 0.04, |pitch| ≤ 0.06).
 |---|---|
 | Depth camera (front of trunk) | `depth_camera/image_raw`, `depth_camera/depth/image_raw`, `depth_camera/camera_info`, `depth_camera/depth/camera_info`, `depth_camera/points` |
 | Livox Mid-360 (top of trunk) | `livox_mid360` (`livox_ros_driver2/msg/CustomMsg`), `livox_mid360_PointCloud2` (`sensor_msgs/msg/PointCloud2`) |
+
+### Frames, extrinsics and intrinsics
+
+All three sensors are fixed links on the `trunk`, so each sensor's extrinsics are a constant
+transform from `trunk` — and, since `base_link → trunk` is the identity `floating_base` joint, also
+from `base_link`. `+x` is forward, `+z` is up.
+
+| Sensor | Frame | Extrinsic from `trunk` |
+|---|---|---|
+| IMU | `imu_link` | `xyz="0 0 0" rpy="0 0 0"` — coincident with the trunk |
+| Livox Mid-360 | `livox_mid360` | `xyz="0 0 0.1" rpy="0 0 0"` — 10 cm above the trunk |
+| Depth camera | `depth_camera_link` | `xyz="0.18 0 0.06" rpy="0 0 0"` — 18 cm forward, 6 cm up |
+
+Sources: `imu_joint` in `robot.xacro`; the `mid360` origin and `depth_camera_joint` in
+`sensors.xacro`.
+
+**IMU** (`libgazebo_ros_imu_sensor.so`, `/imu/data`, 250 Hz) — no scale / bias / axis-misalignment
+model; white Gaussian noise only:
+
+| Term | Value |
+|---|---|
+| Gyro noise (stddev) | `2e-4` rad/s |
+| Accel noise (stddev) | `1.7e-2` m/s² |
+
+**Livox Mid-360** (`libros2_livox.so`, `/livox_mid360_PointCloud2`, 10 Hz) — a point cloud has no
+projection matrix, so there are no "intrinsics"; these parameters define the scan pattern, range
+and noise:
+
+| Term | Value |
+|---|---|
+| Scan pattern | 100 horizontal × 360 vertical (`mid360.csv`) |
+| `samples` / `downsample` | 40000 / **8** (current) |
+| Range | 0.1 – 200 m, `resolution` 0.002 |
+| Range noise (stddev) | 0.01 |
+| FoV | horizontal 360°; vertical −7.22° to +55.22° |
+
+**Depth camera** (`libgazebo_ros_camera.so`, `depth_camera/*`, 30 Hz) — the plugin derives the
+intrinsics from `horizontal_fov` + image size and publishes them on `depth_camera/camera_info`;
+read that topic for the authoritative values rather than the approximation below:
+
+| Term | Value |
+|---|---|
+| Image | 640 × 480, `B8G8R8` (color) + depth |
+| FoV | `horizontal_fov` 1.52 rad (≈ 87.1°) |
+| Clip / depth | near 0.05 m, far 10 m |
+| Intrinsics (approx.) | `fx = fy ≈ 337`, `cx = 320`, `cy = 240` |
 
 The Mid-360 is a non-repetitive 360° **3D** lidar (no `LaserScan`); use `livox_mid360_PointCloud2`
 for visualization or FAST-LIO for 3D SLAM.

@@ -9,7 +9,7 @@ install(
 )
 
 install(
-  PROGRAMS scripts/ground_truth_odom.py
+  PROGRAMS scripts/ground_truth_odom.py scripts/stand.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

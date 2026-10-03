@@ -103,6 +103,11 @@ def generate_launch_description():
             robot_name,
             "-topic",
             "/robot_description",
+            # gzserver can take well over 30 s to load the world and advertise
+            # /spawn_entity on slow machines; the default 30 s timeout makes the
+            # spawn give up before Gazebo is ready (see go2-sim-patches.md).
+            "-timeout",
+            "120",
             "-robot_namespace",
             "",
             "-x",

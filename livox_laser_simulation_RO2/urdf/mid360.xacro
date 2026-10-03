@@ -49,6 +49,11 @@
         <update_rate>10</update_rate>
         <!-- This ray plgin is only for visualization. -->
         <plugin name="${name}_plugin" filename="libros2_livox.so">
+          <ros>
+            <!-- Publish the PointCloud2 on /livox/lidar (plugin appends _PointCloud2
+                 to <topic>, so remap <topic>_PointCloud2 to the desired name). -->
+            <remapping>${topic}_PointCloud2:=livox/lidar</remapping>
+          </ros>
 			<ray>
 			  <scan>
 				<horizontal>
@@ -77,7 +82,7 @@
 			</ray>
           <visualize>false</visualize>
 		  <samples>${samples}</samples>
-		  <downsample>4</downsample>
+		  <downsample>8</downsample>
 		  <csv_file_name>$(find ros2_livox_simulation)/scan_mode/mid360.csv</csv_file_name>
 		  <topic>${topic}</topic>
         </plugin>
