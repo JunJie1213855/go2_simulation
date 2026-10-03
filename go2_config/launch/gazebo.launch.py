@@ -27,7 +27,11 @@ def generate_launch_description():
     gait_config = os.path.join(config_pkg_share, "config/gait/gait.yaml")
     links_config = os.path.join(config_pkg_share, "config/links/links.yaml")
     default_model_path = os.path.join(descr_pkg_share, "xacro/robot.xacro")
-    default_world_path = os.path.join(config_pkg_share, "worlds/outdoor.world")
+    # playground.world is the default: the 84-model outdoor world costs a large
+    # share of the real-time factor because of its mesh collision geometry (the
+    # Livox ray casting dominates gzserver's CPU budget), while an empty world is
+    # no faster than playground -- see the root README's performance section.
+    default_world_path = os.path.join(config_pkg_share, "worlds/playground.world")
 
     declare_use_sim_time = DeclareLaunchArgument(
         "use_sim_time",
