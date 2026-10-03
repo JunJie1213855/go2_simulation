@@ -10,7 +10,7 @@ from launch.actions import (
     IncludeLaunchDescription,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 
 def generate_launch_description():
@@ -48,6 +48,25 @@ def generate_launch_description():
     )
     declare_gui = DeclareLaunchArgument(
         "gui", default_value="true", description="Use gui"
+    )
+    declare_headless = DeclareLaunchArgument(
+        "headless",
+        default_value="False",
+        description="Run Gazebo without the GUI (gzclient)",
+    )
+    # champ_gazebo starts gzclient based on its own `headless` argument and never
+    # looks at `gui`, so the GUI used to come up no matter what. Forward it here,
+    # and keep `gui:=false` working as an alias for `headless:=true`.
+    # The result must be the Python literals True/False: champ_gazebo evaluates
+    # `not <headless>` with PythonExpression, where `not false` is a NameError.
+    headless = PythonExpression(
+        [
+            "'True' if '",
+            LaunchConfiguration("headless"),
+            "'.lower() == 'true' or '",
+            LaunchConfiguration("gui"),
+            "'.lower() == 'false' else 'False'",
+        ]
     )
     declare_world_init_x = DeclareLaunchArgument("world_init_x", default_value="0.0")
     declare_world_init_y = DeclareLaunchArgument("world_init_y", default_value="0.0")
@@ -97,6 +116,7 @@ def generate_launch_description():
             "world_init_y": LaunchConfiguration("world_init_y"),
             "world_init_heading": LaunchConfiguration("world_init_heading"),
             "gui": LaunchConfiguration("gui"),
+            "headless": headless,
             "close_loop_odom": "true",
             "publish_foot_contacts": "false",
         }.items(),
@@ -121,6 +141,7 @@ def generate_launch_description():
             declare_lite,
             declare_gazebo_world,
             declare_gui,
+            declare_headless,
             declare_world_init_x,
             declare_world_init_y,
             declare_world_init_heading,
