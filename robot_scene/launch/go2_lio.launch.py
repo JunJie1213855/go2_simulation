@@ -1,42 +1,47 @@
-"""Run the Gazebo go2 sim and a LiDAR-inertial odometry (Point-LIO) mapping pipeline.
+"""LiDAR-inertial odometry (Point-LIO) mapping stack for the go2 sim.
 
-Data flow:
-    Gazebo mid360 plugin            -> /livox/lidar   (PointCloud2: x,y,z,intensity,timestamp)
-    ign_sim_pointcloud_tool         -> /velodyne_points (PointXYZIRT: ...+ring,time)
-    point_lio (pointlio_mapping)    -> /cloud_registered, /Laser_map, TF camera_init->aft_mapped
+This launch starts ONLY the mapping side - it does not start Gazebo. Run the simulation
+separately, in its own terminal, so the two can be started, stopped and restarted
+independently:
 
-Requires these workspaces to be sourced (the converter and point_lio live there):
-    /home/ros/ros_ws/LIO_Nav2_ROS2/install/setup.bash
+    # terminal 1: Gazebo (GUI, or add headless:=True for no GUI)
+    ros2 launch robot_scene go2_lidar_gps.launch.py
 
-Note: the /livox/lidar `timestamp` field is NOT a physical time. mid360_points_plugin.cpp fills it
-with `SimTime() + mid360.csv column 0`, and that CSV column holds a row index (1..800000) despite
-its "Time/s" header. Its intra-scan spread does correspond to exactly one scan period, so the
-converter normalises it to [0, scan_period] seconds rather than trusting the unit.
+    # terminal 2: mapping + RViz
+    ros2 launch robot_scene go2_lio.launch.py
+
+Data flow (all behind /livox/*, published by the sim):
+
+    /livox/lidar        PointCloud2 (x,y,z,intensity,timestamp)
+        -> ign_sim_pointcloud_tool -> /velodyne_points (PointXYZIRT: ... + ring, time)
+        -> point_lio               -> /cloud_registered, TF camera_init->aft_mapped
+
+Everything it needs lives in this workspace (point_lio, ign_sim_pointcloud_tool), so:
+
+    source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
+
+RViz opens with the Point-LIO config (Fixed Frame `camera_init`). Note that RViz shows the
+*current* scan, not an accumulating map - this Point-LIO never publishes an accumulated map
+(`pcl_wait_pub` is never published); the map only lands in
+`point_lio/PCD/scans.pcd` when you Ctrl-C this launch. See docs/quickstart.md.
+
+Do NOT also run a launch that starts the mapping stack - two Point-LIO instances publish
+conflicting TF on camera_init->aft_mapped and RViz shows garbage.
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    robot_scene_share = get_package_share_directory("robot_scene")
     point_lio_share = get_package_share_directory("point_lio")
 
-    declare_sim = DeclareLaunchArgument(
-        "sim",
-        default_value="true",
-        description="Also start the Gazebo go2 simulation (false = reuse one already running)",
-    )
-    declare_gui = DeclareLaunchArgument(
-        "gui", default_value="true", description="Start the Gazebo GUI (gzclient)"
-    )
     declare_rviz = DeclareLaunchArgument(
         "rviz", default_value="true", description="Start RViz to watch the map"
     )
@@ -46,20 +51,10 @@ def generate_launch_description():
         description="Point-LIO parameter file (expects lidar_type=2 on velodyne_points)",
     )
 
-    # 1) Gazebo go2 sim: the LiDAR/IMU source.
-    sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(robot_scene_share, "launch", "go2_lidar_gps.launch.py")
-        ),
-        condition=IfCondition(LaunchConfiguration("sim")),
-        launch_arguments={
-            "gui": LaunchConfiguration("gui"),
-            "rviz": "false",
-        }.items(),
-    )
-
-    # 2) Bridge to Velodyne layout: adds the `ring` and `time` fields Point-LIO's
-    #    velodyne_handler requires.
+    # Bridge to Velodyne layout: adds the `ring` and `time` fields Point-LIO's
+    # velodyne_handler requires. It also fixes up the sim's bogus per-point `timestamp`
+    # (mid360_points_plugin.cpp fills it with SimTime() + a CSV row index, not a time) by
+    # normalising the intra-scan spread to [0, scan_period] seconds.
     converter = Node(
         package="ign_sim_pointcloud_tool",
         executable="ign_sim_pointcloud_tool_node",
@@ -77,7 +72,8 @@ def generate_launch_description():
         ],
     )
 
-    # 3) Point-LIO. Publishes /cloud_registered, /Laser_map and TF camera_init -> aft_mapped.
+    # Point-LIO. Publishes /cloud_registered, /cloud_registered_body and TF
+    # camera_init -> aft_mapped.
     point_lio = Node(
         package="point_lio",
         executable="pointlio_mapping",
@@ -86,7 +82,7 @@ def generate_launch_description():
         parameters=[LaunchConfiguration("point_lio_cfg")],
     )
 
-    # 4) RViz, preconfigured for Point-LIO.
+    # RViz, preconfigured for Point-LIO.
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -101,11 +97,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            declare_sim,
-            declare_gui,
             declare_rviz,
             declare_point_lio_cfg,
-            sim,
             converter,
             point_lio,
             rviz,

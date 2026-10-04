@@ -8,7 +8,11 @@
        A real Mid-360 reaches ~40 m (70 m at max). -->
   <xacro:property name="laser_max_range" value="20.0"/>
 
-  <xacro:property name="point_rate" value="200000"/> 
+  <!-- point_rate/update_rate = 每帧射线数（这里是 200000/10 = 20000 条）。
+       不要为了提 RTF 把它调小：实测降到 50000（5000 射线/帧）时 RTF 只涨 ~10%，
+       但 Point-LIO 每帧特征点从 ~1300 掉到 ~500，位姿会在几分钟内发散（漂到几万米）。
+       瓶颈不是射线数，见 docs/quickstart.md §10。 -->
+  <xacro:property name="point_rate" value="200000"/>
   <xacro:property name="update_rate" value="10"/>
   <xacro:property name="resolution" value="0.002"/> 
   <xacro:property name="noise_mean" value="0.0"/> 

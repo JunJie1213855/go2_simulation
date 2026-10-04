@@ -45,40 +45,68 @@ ros2 pkg prefix point_lio          # 应该指向 go2_sim_ws/install/point_lio
 
 ## 1. 快速开始
 
+**仿真和 LIO 是两个独立的 launch，各起一个终端。**
+
+### 终端 1 —— 只起 Gazebo
+
+```bash
+source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
+
+# 带界面
+ros2 launch robot_scene go2_lidar_gps.launch.py
+
+# 或 headless（无界面，更快）
+ros2 launch robot_scene go2_lidar_gps.launch.py headless:=True
+```
+
+### 终端 2 —— 只起 LIO 建图 + RViz
+
 ```bash
 source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
 ros2 launch robot_scene go2_lio.launch.py
 ```
 
-启动后：Gazebo GUI + RViz（Point-LIO 配置）+ 机器人 + LIO 全部就绪。等约 20 秒，
-Gazebo 里机器人落地站稳，RViz 里开始出现 `/cloud_registered` 点云。
+RViz 用 Point-LIO 的配置自动打开（Fixed Frame `camera_init`）。
 
-实测链路频率：`/livox/lidar` ~6 Hz → `/velodyne_points` ~5.5 Hz → `/cloud_registered` ~5 Hz。
+> ⚠️ **不要在两个终端里都起 LIO**。`go2_lio.launch.py` 现在**只**起 LIO，不含仿真；
+> 如果你额外再起一个带 LIO 的 launch，会有**两个 Point-LIO 同时发 TF
+> `camera_init→aft_mapped`**，RViz 收到冲突的 TF 和重复点云，画面就是乱的（踩过）。
 
-> ⚠️ **不要加 `gui:=false`**。headless 模式下雷达不出数据，原因见 [坑 3](#坑-3--没有-gui-就没有雷达数据)，
-> 并且**没有绕过的办法**（加 `always_on` 会让 gzserver 段错误）。
+### headless 的两个注意点
 
-### 只跑仿真（不要 LIO）
+用 `headless:=True` 时：
 
-```bash
-source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
-ros2 launch robot_scene go2_lidar_gps.launch.py
-```
+- **必须写大写 `True`** —— champ 用 `PythonExpression([" not ", headless])` 判断，小写 `true` 会 abort（坑 7）；
+- **启动后等约 50 秒**雷达才出数据 —— 仿真 launch 会在 50 秒时自动订阅 scan 话题唤醒传感器
+  （传感器没有 `always_on`，必须有人订阅才激活，见坑 3）。想调延时用
+  `activate_delay:=30.0`，但**别调太小**，过早激活会让 gzserver 段错误。
 
-### 仿真已经在跑，只补起 LIO
+### 两种模式实测差异
 
-```bash
-source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
-ros2 launch robot_scene go2_lio.launch.py sim:=false
-```
+同一 `point_rate`（200000）下只变 GUI/headless（RTF 会随机器负载波动 ±10%）：
+
+| | 带界面 | headless |
+|---|---|---|
+| RTF（稳态） | ~0.36 | **~0.44** |
+| `/livox/lidar` | 2.7 Hz | **4.7 Hz** |
+| Gazebo 窗口 | 有 | 无 |
+
+> RTF 的上限受射线数限制（见 §10），**不要为了提速去降 `point_rate`** —— 那会让 LIO 发散。
+
+> ⚠️ **不要给仿真 launch 加 `gui:=false`**。那只是关掉 gzclient，但传感器就没人去激活了，
+> 雷达**一条数据都没有**。不要界面请用 `headless:=True`。
 
 ### 停止
+
+Ctrl-C 各自的终端即可。要一次全停：
 
 ```bash
 pkill -x gzserver; pkill -x gzclient; pkill -x rviz2
 pkill -f "ros2 launch robot_scene"; pkill -f pointlio_mapping
 pkill -f ign_sim_pointcloud_tool_node; pkill -f quadruped_controller_node
 ```
+
+> `pointlio_mapping` 用默认的 SIGTERM 退出会写 PCD（见 §3 的建图产物）。`kill -9` 不会。
 
 ---
 
@@ -215,23 +243,28 @@ RViz 里 Fixed Frame 设为 `camera_init`，加 PointCloud2 display 指向 `/clo
 
 ## 5. launch 参数
 
-### `go2_lio.launch.py`
+### `go2_lidar_gps.launch.py` —— 只起仿真
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `sim` | `true` | 是否同时起仿真；`false` = 复用已在跑的仿真 |
-| `gui` | `true` | 起 gzclient。**必须保持 true**，见坑 3 |
-| `rviz` | `true` | 起 RViz |
+| `world` | `robot_scene/worlds/indoor_walls1.world` | 世界文件 |
+| `gui` | `true` | 传给 champ 的 gui 开关（实际抑制 gzclient 的是 `headless`） |
+| `headless` | `False` | **必须写 `True`/`False`（大写）**。不启 gzclient，且**自动在 `activate_delay` 秒后订阅 scan 话题激活雷达**，见坑 3 / §10 |
+| `activate_delay` | `50.0` | `headless:=True` 时延时多少秒后激活传感器。**调太小会让 gzserver 段错误** |
+| `publish_foot_contacts` | `false` | champ 的 contact_sensor，已知不稳定，默认关（见坑 1） |
+| `rviz` | `false` | 传给 champ bringup 的 rviz（不是 Point-LIO 那个） |
+
+其余：`use_sim_time` / `robot_name` / `lite` / `ros_control_file` / `world_init_x|y|z|heading`
+
+### `go2_lio.launch.py` —— 只起 LIO
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `rviz` | `true` | 起 RViz（Point-LIO 配置，Fixed Frame `camera_init`） |
 | `point_lio_cfg` | `point_lio/share/point_lio/config/mid360_sim.yaml` | Point-LIO 参数文件 |
 
-### `go2_lidar_gps.launch.py`
-
-`use_sim_time` / `rviz` / `robot_name` / `lite` / `publish_foot_contacts` /
-`ros_control_file` / `world` / `gui` / `world_init_x|y|z|heading`
-
-- `world` 默认 `robot_scene/worlds/indoor_walls1.world`
-- `publish_foot_contacts` 默认 `false`（见坑 1）
-- **注意**：`headless` 必须写成 Python 的 `True`（大写），见坑 7
+> 这个 launch **不含仿真**。它只起 `ign_sim_pointcloud_tool` 转换器 + `pointlio_mapping` + RViz，
+> 订阅已经在跑的仿真发出来的 `/livox/*`。
 
 ---
 
@@ -326,12 +359,18 @@ gzclient 因为 xacro 里的 `<visualize>true</visualize>` 会去订阅 scan 来
 **在 5 / 20 / 40 m 三种量程下都复现，所以跟量程无关，只跟"激活时机"有关**：
 过早激活（模型插入瞬间）会踩到自定义射线形状的初始化竞态。
 
-**处理** 保持"晚激活"模式，即**必须开 GUI**。`mid360.xacro` 里已写注释固化这个约束。
-`go2_lio.launch.py` 的 `gui` 默认 `true`。
+**处理** 保持"晚激活"模式。有两条路：
 
-> 想彻底 headless，得改 `mid360_points_plugin.cpp` 做**延迟激活**：
-> `Load()` 完成后过一段时间再调 `raySensor_->SetActive(true)`。
-> 单纯在 `OnNewLaserScans()` 里加就绪守卫（已加 `ready_`）**不够**。
+1. **开 GUI**（默认）：gzclient 自己会订阅，传感器自然被激活。
+2. **`headless:=True`**：launch 会**延时 50 秒后自己订阅** scan 话题来激活传感器。
+   实测 RTF ~0.44（GUI 是 ~0.36），雷达 4.7 Hz（GUI 是 2.7 Hz）。见 §10。
+
+`mid360.xacro` 里已写注释固化"不要加 `always_on`"这个约束。
+
+> 更彻底的做法是改 `mid360_points_plugin.cpp` 做**延迟激活**（`Load()` 完成后过几秒再
+> `raySensor_->SetActive(true)`），这样就不依赖外部订阅者。目前用 launch 的定时订阅
+> 达到同样效果，没动插件。另外单纯在 `OnNewLaserScans()` 里加就绪守卫（已加 `ready_`）
+> **不足以**解决段错误。
 
 ---
 
@@ -462,8 +501,8 @@ gdb -batch -ex "bt 45" /usr/bin/gzserver /tmp/gz.core
 
 | 项 | 状态 |
 |---|---|
-| 雷达只有 **~4 Hz**（标称 10 Hz） | 插件每帧 20000 条射线太贵。降 `mid360.xacro` 的 `point_rate`（200000 → 100000）应能到 8~9 Hz，LIO 质量会更好 |
-| **必须开 GUI**，无法 headless | 需要给插件做延迟激活，见坑 3 |
+| 雷达只有 ~4.7 Hz（标称 10 Hz） | **不要靠降 `point_rate` 解决**（会让 LIO 发散，见 §10）。headless 已是当前配置下的最好结果；再高要改插件的射线调度（分批摊到多帧），不是改采样数 |
+| ~~必须开 GUI~~ **已支持 headless** | 用 `headless:=True`（launch 会延时订阅唤醒传感器）。更彻底的做法是改插件做延迟激活，见坑 3 |
 | `mapping.extrinsic_est_en` | `mid360_sim.yaml` 里注释和实际值不一致（注释说 True，实际 False），目前用 False 是对的 |
 | `ros2 control load_controller` 启动时偶发 exit 1 | 竞态，控制器最终是 `active` 的，不影响使用 |
 | `garage.world` | 仍不可用；要用需补 garage 模型**并且**把重力改成 `0 0 -9.8` |
@@ -478,9 +517,10 @@ gdb -batch -ex "bt 45" /usr/bin/gzserver /tmp/gz.core
 | 文件 | 改动 |
 |---|---|
 | `champ/champ_gazebo/launch/gazebo.launch.py` | 新增 `publish_foot_contacts` 参数（默认 `false`），给 `contact_sensor` 加 `condition`。**修坑 1** |
-| `robot_scene/launch/go2_lidar_gps.launch.py` | `publish_foot_contacts` 改为 launch 参数并透传给 champ；默认 world 改为 `indoor_walls1.world`。**修坑 1 / 2** |
-| `robot_scene/launch/go2_lio.launch.py` | **新增**。串接 仿真 + 转换器 + Point-LIO + RViz |
-| `robot_scene/xacro/mid360.xacro` | `laser_max_range` 5.0 → 20.0；注释固化"必须开 GUI""注释别写冒号"两条约束。**修坑 5 / 3 / 6** |
+| `robot_scene/launch/go2_lidar_gps.launch.py` | **只起仿真**。`publish_foot_contacts` 改为 launch 参数并透传给 champ；默认 world 改为 `indoor_walls1.world`；**新增 `headless` / `activate_delay` 参数**（headless 时自动延时订阅 scan 话题激活传感器，RTF ~0.36 → ~0.44）。**修坑 1 / 2 / 3** |
+| `robot_scene/launch/go2_lio.launch.py` | **新增，只起 LIO**：转换器 + Point-LIO + RViz。不含仿真（避免两个 Point-LIO 抢发 TF） |
+| `robot_scene/xacro/mid360.xacro` | `laser_max_range` 5.0 → 20.0（`point_rate` 试过降到 50000 但会让 LIO 发散，**已回滚保持 200000**）；注释固化"别加 `always_on`""注释别写冒号""别降 point_rate"三条约束。**修坑 5 / 3 / 6 / §10** |
+| `robot_scene/worlds/indoor_walls1.world` | 物理段加注释，说明为什么不能调大 `max_step_size`（实测 0.002 会让四足发散）。**§10** |
 | `robot_scene/xacro/go2_gazebo.xacro` | 未改（foot link 无 `max_contacts`，是坑 1 的数据源背景） |
 | `GazeboQuadbot/point_lio/` | **新迁入本工作区**（原件在 `LIO_Nav2_ROS2`）。源码逐字节未改，`config/mid360_sim.yaml` 就是验证过的那份 |
 | `GazeboQuadbot/ign_sim_pointcloud_tool/` | **新迁入本工作区**（原件在 `LIO_Nav2_ROS2`），**含坑 4 的转换器修复**：改用真实逐点时间（归一化，带回退），新增 `scan_period` 参数 |
@@ -514,3 +554,83 @@ ros2 topic echo --once /velodyne_points --field fields
 # Gazebo transport 上有什么
 gz topic -l | grep -i lidar
 ```
+
+---
+
+## 10. 性能与 RTF 调优（实测）
+
+测试环境：`indoor_walls1` world，12 核，loadavg 4~6。**RTF 会随机器负载波动 ±10%**，
+下面都是稳态取值（跳过启动后第一个偏高的采样）。
+
+### 受控对比（只变一个变量）
+
+**`point_rate = 200000`（当前默认，也是 LIO 能稳定工作的唯一配置）**
+
+| 模式 | RTF（稳态） | `/livox/lidar` |
+|---|---|---|
+| 带 GUI（gzclient） | ~0.36 | 2.7 Hz |
+| `headless:=True` | **~0.44** | **4.7 Hz** |
+
+**`point_rate = 50000`（❌ 不要用，LIO 会发散）**
+
+| 模式 | RTF（稳态） | `/livox/lidar` |
+|---|---|---|
+| `headless:=True` | ~0.85 | 8.5 Hz |
+
+### 结论
+
+**1. 射线数才是主要开销**，不是 GUI。20000 → 5000 射线/帧能把 RTF 从 ~0.44 抬到 ~0.85。
+**但这条路不能走** —— 见结论 2。
+
+**2. headless 是小幅但确实的收益**：同一射线数下 RTF ~0.36 → ~0.44（+20%），
+雷达 2.7 → 4.7 Hz（+75%）。原因是不用再跑 gzclient（实测占 ~65% CPU）及其与 gzserver 的争用。
+
+**已经做成仿真 launch 的选项**：
+
+```bash
+ros2 launch robot_scene go2_lidar_gps.launch.py headless:=True
+```
+
+`headless:=True` 时那个 launch 会自动做两件事：
+- 不给 gzclient（通过 champ 的 `headless` 开关），
+- **延时 `activate_delay`（默认 50 秒）后自己订阅雷达的 scan 话题**，把传感器唤醒。
+
+（LIO 部分照常在另一个终端 `ros2 launch robot_scene go2_lio.launch.py` 起，见 §1。）
+
+- ⚠️ **`headless` 必须写 Python 风格的 `True`/`False`**（大写）。champ 那边用
+  `PythonExpression([" not ", headless])` 判断，小写 `true` 会让 launch 直接报
+  `name 'true' is not defined`（坑 7）。
+- ⚠️ **别把 `activate_delay` 调太小**。在启动瞬间就订阅 = "过早激活"，会让 gzserver
+  在 `dSpaceCollide2` 里段错误（坑 3），这台机器上实测 50 秒是安全的。
+- 话题名格式是 `/gazebo/<world>/<model>/<link>/<sensor>/scan`，launch 里用
+  `gz topic -l | grep -m1 livox/scan` 自动发现，没有硬编码。
+
+**3. 不要为了提 RTF 去降射线数**（这条我试过，是错的，已回滚）。
+
+`point_rate` 200000 → 50000（20000 → 5000 射线/帧）确实把 RTF 抬到 ~0.85、雷达频率到 8.5 Hz，
+**但 Point-LIO 每帧特征点从 ~2957 掉到 ~506**，几何约束不够，
+位姿会在几分钟内发散（实测漂到 `(1248, 4964, -31498)`，几万米）。
+
+| `point_rate` | 每帧射线 | `/velodyne_points` 点数 | LIO 每帧 `surf` 特征（中位） | 4 分钟内位姿 |
+|---|---|---|---|---|
+| **200000（当前）** | 20000 | ~11800 | **2957** | **稳定**（漂 0.06 m） |
+| 50000 | 5000 | ~4125 | 506 | ❌ 发散到 ~3 万米 |
+
+所以 `mid360.xacro` 保持 `point_rate = 200000`。**提性能请用 headless，不要动射线数。**
+（降射线数也不影响时间戳正确性 —— 转换器按帧内 `timestamp` 跨度归一化，坑 4 —— 但 LIO 质量撑不住。）
+
+> 判断 LIO 是否健康的快速方法：看 pointlio 的日志
+> `grep -oE "surf=[0-9]+" <log> | sort -n | awk '{a[NR]=$1} END {print a[int(NR/2)]}'`
+> —— 中位数应该在 **2000~3000**。掉到几百就是特征不够，位姿离发散不远了。
+
+**4. 不要调大 `max_step_size`。** 实测 `0.001 → 0.002`（配合 `real_time_update_rate 1000 → 500`）：
+RTF 几乎没变，而且**四足物理发散**（LIO 位姿飞到 `-11740`）。已回滚，
+world 文件里留了注释警告。
+
+**5. gzserver 只用 ~1.1 核**（12 核机器上没打满），说明 RTF 受**内部串行**限制
+（射线计算要拿物理引擎互斥锁），不是 CPU 总量不足。
+所以关掉机器上其它吃 CPU 的程序（实测 Edge 占 ~60%）帮助有限。
+
+**6. 结论：在 LIO 能正常工作的前提下，RTF 上限就在 ~0.44（headless）。**
+要真正提上去，只有改插件**减少射线调度开销**（比如把每帧 20000 条射线分批跨帧摊开），
+而不是减采样数 —— 但那会改动 `mid360_points_plugin.cpp` 的扫描逻辑，属于另一件事。

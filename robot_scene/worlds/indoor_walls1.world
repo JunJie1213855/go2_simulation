@@ -69,6 +69,9 @@
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type='adiabatic'/>
     <physics type='ode'>
+      <!-- 不要调大 max_step_size：实测 0.002 会让四足物理发散
+           （LIO 位姿飞到 -11740），且 RTF 几乎没提升（0.55 -> 0.60）。
+           保持 0.001 / 1000。RTF 的瓶颈不在步数，见 docs/quickstart.md 的 RTF 一节。 -->
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>

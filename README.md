@@ -86,16 +86,36 @@ colcon build --packages-select point_lio ign_sim_pointcloud_tool robot_scene --s
 
 > 不用装 `libunwind-dev`（`point_lio/package.xml` 里那条是多余的，CMakeLists 和源码都没用到）。
 
-## 仿真 + 建图
+## 仿真 + 建图（两个终端）
+
+仿真和 LIO 是两个独立 launch，各自启停。两个终端都要先：
 
 ```bash
 source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
+```
+
+**终端 1 —— 只起 Gazebo：**
+
+```bash
+ros2 launch robot_scene go2_lidar_gps.launch.py                    # 带界面
+ros2 launch robot_scene go2_lidar_gps.launch.py headless:=True     # 无界面（RTF ~0.44 vs ~0.36，雷达 4.7 vs 2.7 Hz）
+```
+
+**终端 2 —— 只起 LIO 建图 + RViz：**
+
+```bash
 ros2 launch robot_scene go2_lio.launch.py
 ```
 
-- ⚠️ **不要加 `gui:=false`** — headless 下雷达一条数据都没有，且无法绕过（见 quickstart 坑 3）
-- 仿真已经在跑、只补 LIO：加 `sim:=false`
-- 只跑仿真（不含 LIO）：`ros2 launch robot_scene go2_lidar_gps.launch.py`
+`headless:=True` 有两点要注意：
+
+- **必须写大写 `True`** —— champ 用 `PythonExpression([" not ", headless])` 判断，小写 `true` 会 abort；
+- **启动后等约 50 秒**雷达才出数据 —— 该 launch 会在 50 秒时自动订阅 scan 话题唤醒传感器
+  （传感器没有 `always_on`，必须有人订阅才激活）。想调延时用 `activate_delay:=30.0`，
+  但**别调太小**，过早激活会让 gzserver 段错误。
+
+- ⚠️ **不要给仿真 launch 加 `gui:=false`** — 那只是关掉 gzclient，雷达传感器就没人激活了，一条数据都没有（见 quickstart 坑 3）
+- ⚠️ **不要在两个终端里都起 LIO** —— 两个 Point-LIO 会抢发 TF `camera_init→aft_mapped`，RViz 画面会乱
 - 确认 `point_lio` 解析到本工作区：`ros2 pkg prefix point_lio`
 
 > 注意：默认 world 已从 `garage.world` 改为 `robot_scene/worlds/indoor_walls1.world`

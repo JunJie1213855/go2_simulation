@@ -9,6 +9,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -73,6 +74,24 @@ def generate_launch_description():
     declare_gui = DeclareLaunchArgument(
         "gui", default_value="true", description="Use gui"
     )
+    declare_headless = DeclareLaunchArgument(
+        "headless",
+        default_value="False",
+        description=(
+            "Do not start gzclient (measurably faster). MUST be Python-style True/False - "
+            "champ gates gzclient with PythonExpression 'not headless'. When True this "
+            "launch also activates the lidar sensor itself, see activate_delay."
+        ),
+    )
+    declare_activate_delay = DeclareLaunchArgument(
+        "activate_delay",
+        default_value="50.0",
+        description=(
+            "Seconds to wait before subscribing to the lidar scan topic, which is what "
+            "activates the sensor (only used when headless:=True). Do not lower it much: "
+            "activating the sensor before the robot has settled segfaults gzserver."
+        ),
+    )
     declare_world_init_x = DeclareLaunchArgument("world_init_x", default_value="0.0")
     declare_world_init_y = DeclareLaunchArgument("world_init_y", default_value="0.0")
     declare_world_init_z = DeclareLaunchArgument("world_init_z", default_value="0.275")
@@ -124,9 +143,41 @@ def generate_launch_description():
             "world_init_z": LaunchConfiguration("world_init_z"),
             "world_init_heading": LaunchConfiguration("world_init_heading"),
             "gui": LaunchConfiguration("gui"),
+            "headless": LaunchConfiguration("headless"),
             "close_loop_odom": "true",
             "publish_foot_contacts": LaunchConfiguration("publish_foot_contacts"),
         }.items(),
+    )
+
+    # Headless has no gzclient, and gzclient is what normally activates the mid360 ray sensor:
+    # its SDF has no <always_on>, so Gazebo only starts updating it once something subscribes
+    # to its scan topic - which gzclient does because <visualize> is true. Without that
+    # subscription /livox/lidar stays completely silent (not empty, absent), so subscribe
+    # ourselves. Delayed on purpose: activating the sensor while the robot is still spawning
+    # and settling segfaults gzserver inside dSpaceCollide2. The robot spawns ~15 s in and the
+    # plugin spends ~6 s parsing an 800k-row CSV, so 50 s is comfortably past that.
+    # `gz topic -e` is used only for its subscription side effect; its output is enormous and
+    # is discarded. The topic is /gazebo/<world>/<model>/<link>/<sensor>/scan, so discover it
+    # rather than hardcoding.
+    activate_lidar_sensor = TimerAction(
+        period=LaunchConfiguration("activate_delay"),
+        condition=IfCondition(LaunchConfiguration("headless")),
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "bash",
+                    "-c",
+                    "t=$(gz topic -l 2>/dev/null | grep -m1 livox/scan); "
+                    "if [ -z \"$t\" ]; then "
+                    "  echo '[go2_sim] ERROR: no livox/scan topic; lidar will stay silent'; "
+                    "  exit 1; "
+                    "fi; "
+                    "echo \"[go2_sim] activating lidar sensor via $t\"; "
+                    "exec gz topic -e \"$t\" > /dev/null",
+                ],
+                output="screen",
+            )
+        ],
     )
 
     return LaunchDescription(
@@ -139,12 +190,14 @@ def generate_launch_description():
             declare_ros_control_file,
             declare_gazebo_world,
             declare_gui,
+            declare_headless,
+            declare_activate_delay,
             declare_world_init_x,
             declare_world_init_y,
             declare_world_init_z,
             declare_world_init_heading,
             bringup_ld,
-            gazebo_ld
-
+            gazebo_ld,
+            activate_lidar_sensor,
         ]
     )
