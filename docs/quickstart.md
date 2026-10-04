@@ -9,16 +9,51 @@ ROS 2 Humble + Gazebo Classic 11 的宇树 Go2 仿真，带 Livox Mid-360 雷达
 
 ---
 
+## 0. 编译
+
+**不需要 source 任何外部工作区。** `point_lio` 和 `ign_sim_pointcloud_tool` 都已经在本工作区里
+（`src/GazeboQuadbot/{point_lio,ign_sim_pointcloud_tool}`），而它们唯一的编译期外部依赖
+`livox_ros_driver2` 已经由 `~/.bashrc` 里的 `source /home/ros/ros_ws/livox_ros/install/setup.sh`
+提供：
+
+```bash
+cd /home/ros/ros_ws/go2_sim_ws
+colcon build --symlink-install
+```
+
+只改了 LIO / 点云 / 场景的话，可以只编这三个包：
+
+```bash
+colcon build --packages-select point_lio ign_sim_pointcloud_tool robot_scene --symlink-install
+```
+
+> 若换了机器 / 改了 `.bashrc`，用 `ros2 pkg prefix livox_ros_driver2` 确认它还能找到；
+> 找不到就 source 一个提供它的工作区（`livox_ros` 或 `LIO_Nav2_ROS2` 都行）。
+
+> `point_lio/package.xml` 里写了 `<depend>libunwind-dev</depend>`，但 **CMakeLists 和源码根本
+> 没用到 libunwind**（只 `find_package(glog)`）。所以**不用装 libunwind-dev**，不装也能编过。
+> 用 `rosdep install` 时它会去要这个包，可以忽略。
+
+编译产物验证：
+
+```bash
+source install/setup.bash
+ros2 pkg prefix point_lio          # 应该指向 go2_sim_ws/install/point_lio
+```
+
+---
+
 ## 1. 快速开始
 
 ```bash
-source /home/ros/ros_ws/LIO_Nav2_ROS2/install/setup.bash   # 必须先 source，提供转换器 + point_lio
 source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
 ros2 launch robot_scene go2_lio.launch.py
 ```
 
 启动后：Gazebo GUI + RViz（Point-LIO 配置）+ 机器人 + LIO 全部就绪。等约 20 秒，
 Gazebo 里机器人落地站稳，RViz 里开始出现 `/cloud_registered` 点云。
+
+实测链路频率：`/livox/lidar` ~6 Hz → `/velodyne_points` ~5.5 Hz → `/cloud_registered` ~5 Hz。
 
 > ⚠️ **不要加 `gui:=false`**。headless 模式下雷达不出数据，原因见 [坑 3](#坑-3--没有-gui-就没有雷达数据)，
 > 并且**没有绕过的办法**（加 `always_on` 会让 gzserver 段错误）。
@@ -33,7 +68,6 @@ ros2 launch robot_scene go2_lidar_gps.launch.py
 ### 仿真已经在跑，只补起 LIO
 
 ```bash
-source /home/ros/ros_ws/LIO_Nav2_ROS2/install/setup.bash
 source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
 ros2 launch robot_scene go2_lio.launch.py sim:=false
 ```
@@ -50,18 +84,34 @@ pkill -f ign_sim_pointcloud_tool_node; pkill -f quadruped_controller_node
 
 ## 2. 依赖的工作区（重要）
 
-| 工作区 | 提供 | 说明 |
+**本工作区已完全自包含**，编译和运行都只需要它自己：
+
+| 提供者 | 内容 | 何时需要 |
 |---|---|---|
-| `/home/ros/ros_ws/go2_sim_ws` | `robot_scene`、`champ_*`、`go2_config`、`mid360_simulation` | 本工作区，场景/机器人/雷达插件 |
-| `/home/ros/ros_ws/LIO_Nav2_ROS2` | `ign_sim_pointcloud_tool`、`point_lio` | **必须 source**，转换器和 LIO 都在这 |
+| `/home/ros/ros_ws/go2_sim_ws` | `point_lio`、`ign_sim_pointcloud_tool`、`robot_scene`、`champ_*`、`go2_config`、`mid360_simulation` | **编译 + 运行** |
+| `/home/ros/ros_ws/livox_ros`（由 `~/.bashrc` 自动 source） | `livox_ros_driver2` | **仅编译期**：`point_lio` 需要它的 `CustomMsg` |
+| `/opt/ros/humble` | ROS 2 本体 | 运行 |
 
-**source 顺序：先 `LIO_Nav2_ROS2`，后 `go2_sim_ws`。**
+也就是说正常流程只有：
 
-> ⚠️ **`point_lio` 有两份**：`LIO_Nav2_ROS2` 和 `lio_slam_ws` 里各有一个同名包。
-> `go2_lio.launch.py` 用 `get_package_share_directory("point_lio")` 解析，**后 source 的赢**。
-> 如果 `lio_slam_ws` 也在你的默认环境里，会拿到错误的那份配置。
-> 建议：**只 source `LIO_Nav2_ROS2`**，不要 source `lio_slam_ws`。
-> 用 `ros2 pkg prefix point_lio` 可以确认当前解析到哪一份。
+```bash
+cd /home/ros/ros_ws/go2_sim_ws
+colcon build --symlink-install
+source install/setup.bash
+ros2 launch robot_scene go2_lio.launch.py
+```
+
+> ⚠️ **同名包冲突**：`point_lio` 在本工作区、`LIO_Nav2_ROS2`、`lio_slam_ws` 各有一份；
+> `ign_sim_pointcloud_tool` 在本工作区和 `LIO_Nav2_ROS2` 各有一份。
+> launch 用 `get_package_share_directory(...)` 按 `AMENT_PREFIX_PATH` 顺序解析，**后 source 的赢**。
+> **如果你手动 source 了 `LIO_Nav2_ROS2` / `lio_slam_ws`，一定要把本工作区放在最后 source**，
+> 否则会拿到它们那份（可能版本不一致）。
+> 本工作区的两份已确认和来源**逐字节一致**（`diff -rq` 无差异）。用 `ros2 pkg prefix` 确认：
+
+```bash
+ros2 pkg prefix point_lio                 # 期望 .../go2_sim_ws/install/point_lio
+ros2 pkg prefix ign_sim_pointcloud_tool   # 期望 .../go2_sim_ws/install/ign_sim_pointcloud_tool
+```
 
 ---
 
@@ -79,9 +129,9 @@ ign_sim_pointcloud_tool（转换器：补 ring 和 time 字段）
                        (x,y,z,intensity,ring,time；time ∈ [0, 0.1] s)
 
 point_lio（pointlio_mapping，lidar_type=2 / VELODYNE）
-  ├─ /cloud_registered      配准到世界系的点云（实时地图）
-  ├─ /cloud_registered_body IMU 体系下的点云
-  ├─ /Laser_map             累积地图
+  ├─ /cloud_registered      **当前帧**特征点（世界系 camera_init），跟着机器人跑，不是累积地图
+  ├─ /cloud_registered_body 当前帧点云（IMU 体系）
+  ├─ /Laser_map             初始化瞬间的快照，**只发布一次**
   └─ TF: camera_init ──► aft_mapped
 ```
 
@@ -118,7 +168,6 @@ launch 里已把 `/cmd_vel/smooth` remap 到 `/cmd_vel`，所以直接发 `/cmd_
 ### 键盘遥控
 
 ```bash
-source /home/ros/ros_ws/LIO_Nav2_ROS2/install/setup.bash
 source /home/ros/ros_ws/go2_sim_ws/install/setup.bash
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 # i 前进 / , 后退 / j 左转 / l 右转 / k 停止
@@ -149,8 +198,18 @@ Ctrl-C 停发后，champ 有指令超时保护会**自动停下**。
 
 ### 边遥控边看建图
 
-RViz 里 Fixed Frame 设为 `camera_init`，加 PointCloud2 display 指向 `/cloud_registered`
-或 `/Laser_map`。走起来地图就会长出来。
+RViz 里 Fixed Frame 设为 `camera_init`，加 PointCloud2 display 指向 `/cloud_registered`。
+
+> ⚠️ **但 RViz 里看不到"逐渐长出来的地图"**。这个版本的 Point-LIO **不持续发布累积地图**：
+>
+> - `/cloud_registered` 是**当前帧**特征点，RViz 每帧替换，看上去是一小片点云跟着机器人跑
+> - `/Laser_map` 只在**初始化时发布一次**（`laserMapping.cpp:528` 的 `publish_init_map`）
+> - 累积地图 `pcl_wait_pub` 在 `laserMapping.cpp:180` **声明了但从未被 publish**
+>
+> 真正的累积地图只在 **Ctrl-C 正常退出**时写到
+> `src/GazeboQuadbot/point_lio/PCD/scans.pcd`（实测静止几秒即 29 万点）。
+> 想看"长出来"的过程，可以每隔一段时间退一次、看 PCD；或者自己给
+> `laserMapping.cpp` 加一个周期性 `publish_map`。
 
 ---
 
@@ -409,6 +468,8 @@ gdb -batch -ex "bt 45" /usr/bin/gzserver /tmp/gz.core
 | `ros2 control load_controller` 启动时偶发 exit 1 | 竞态，控制器最终是 `active` 的，不影响使用 |
 | `garage.world` | 仍不可用；要用需补 garage 模型**并且**把重力改成 `0 0 -9.8` |
 | `contact_sensor` | 默认关闭；`publish_foot_contacts:=true` 可打开，但崩溃问题仍在 |
+| **RViz 里看不到累积地图** | Point-LIO 这个版本不持续发布地图（`pcl_wait_pub` 从未 publish，`/Laser_map` 只发一次）。只能用退出时的 PCD，或自己加周期性 publish |
+| 遥控时机器人走得**明显比指令慢** | 实测发 `x=0.3 m/s` 持续 20 秒只走了约 1.1 m。开 GUI 时 RTF 仅 ~0.5，且 champ 步态在仿真里有打滑。不是 LIO 的问题（LIO 报告的是真实位移） |
 
 ---
 
@@ -421,9 +482,10 @@ gdb -batch -ex "bt 45" /usr/bin/gzserver /tmp/gz.core
 | `robot_scene/launch/go2_lio.launch.py` | **新增**。串接 仿真 + 转换器 + Point-LIO + RViz |
 | `robot_scene/xacro/mid360.xacro` | `laser_max_range` 5.0 → 20.0；注释固化"必须开 GUI""注释别写冒号"两条约束。**修坑 5 / 3 / 6** |
 | `robot_scene/xacro/go2_gazebo.xacro` | 未改（foot link 无 `max_contacts`，是坑 1 的数据源背景） |
-| `LIO_Nav2_ROS2/.../ign_sim_pointcloud_tool/{src,include}` | 转换器改用真实逐点时间（归一化），带回退；新增 `scan_period` 参数。**修坑 4** |
-| `go2_sim_ws/.../mid360_simulation/{src,include}` | `Mid360PointsPlugin` 加 `ready_` 守卫（防御性，**不足以**支持 headless，见坑 3） |
-| `LIO_Nav2_ROS2/.../point_lio/config/mid360_sim.yaml` | **未改**，现成配置与实机外参/单位正好匹配，直接可用 |
+| `GazeboQuadbot/point_lio/` | **新迁入本工作区**（原件在 `LIO_Nav2_ROS2`）。源码逐字节未改，`config/mid360_sim.yaml` 就是验证过的那份 |
+| `GazeboQuadbot/ign_sim_pointcloud_tool/` | **新迁入本工作区**（原件在 `LIO_Nav2_ROS2`），**含坑 4 的转换器修复**：改用真实逐点时间（归一化，带回退），新增 `scan_period` 参数 |
+| `GazeboQuadbot/mid360_simulation/{src,include}` | `Mid360PointsPlugin` 加 `ready_` 守卫（防御性，**不足以**支持 headless，见坑 3） |
+| `GazeboQuadbot/docs/quickstart.md` | **本文件** |
 
 > 本工作区**不是 git 仓库**，改动用文件时间戳和上面的表对照。
 
